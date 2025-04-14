@@ -15,56 +15,45 @@ class Bidirectional(nn.Module):
 import torchvision.models as models
 
 class CRNN(nn.Module):
-    def __init__(self, in_channels, output):
+    def __init__(self, imgH, nc, nclass, nh):
         super(CRNN, self).__init__()
+        self.imgH = imgH
+        self.nc = nc
+        self.nclass = nclass
+        self.nh = nh
 
-        # CNN Layers with reduced number of channels
+        # CNN layers
         self.cnn = nn.Sequential(
-            nn.Conv2d(in_channels, 128, 3, stride=1, padding=1),  # 3x3 conv 128
-            nn.ReLU(),
-            nn.BatchNorm2d(128),
-            nn.MaxPool2d(2, 2),
-            
-            nn.Conv2d(128, 64, 3, stride=1, padding=1),  # 3x3 conv 64
-            nn.ReLU(),
-            nn.BatchNorm2d(64),
-            nn.MaxPool2d(2, 2),
-            
-            nn.Conv2d(64, 32, 3, stride=1, padding=1),  # 3x3 conv 32
-            nn.ReLU(),
-            nn.BatchNorm2d(32),
-            nn.MaxPool2d(2, 2)
+            nn.Conv2d(nc, 64, 3, 1, 1), nn.ReLU(),
+            nn.MaxPool2d(2, 2),  # H/2
+            nn.Conv2d(64, 128, 3, 1, 1), nn.ReLU(),
+            nn.MaxPool2d(2, 2),  # H/4
+            nn.Conv2d(128, 256, 3, 1, 1), nn.ReLU(),
+            nn.Conv2d(256, 256, 3, 1, 1), nn.ReLU(),
+            nn.MaxPool2d((2, 1)),  # H/8
+            nn.Conv2d(256, 512, 3, 1, 1), nn.ReLU(),
+            nn.BatchNorm2d(512),
+            nn.Conv2d(512, 512, 3, 1, 1), nn.ReLU(),
+            nn.MaxPool2d((2, 1)),  # H/16
+            nn.Conv2d(512, 512, 2, 1, 0), nn.ReLU()  # h = 1
         )
-        
-        # Sau 3 lần MaxPool2d với kernel (2, 2), chiều cao và chiều rộng sẽ giảm đi một nửa mỗi lần
-        # Giả sử kích thước ảnh đầu vào là 128x128, chiều cao sẽ giảm còn 16 (128 / 2^3), chiều rộng tương tự.
-        # input_size = channels * height, so input_size = 32 * 16 = 512
-        self.rnn = nn.LSTM(input_size=32 * 13, hidden_size=1024, num_layers=2, batch_first=False, bidirectional=True)
 
-        # Output Layer
-        self.output_layer = nn.Linear(1024 * 2, output + 1)  # +1 for the blank token in CTC
+        # RNN layers
+        self.rnn = nn.Sequential(
+            nn.LSTM(512, nh, bidirectional=True, num_layers=2),
+            nn.LSTM(nh * 2, nh, bidirectional=True, num_layers=2)
+        )
 
-    def forward(self, X, y=None, criterion=None):
-        # Áp dụng các lớp CNN
-        out = self.cnn(X)
-        batch_size, channels, height, width = out.size()
-        
-        # Reshape đầu ra của CNN để đưa vào RNN: (width, batch_size, channels * height)
-        out = out.permute(3, 0, 2, 1).reshape(width, batch_size, channels * height)
-        
-        # Áp dụng các lớp RNN
-        out, _ = self.rnn(out)
-        
-        # Áp dụng lớp output
-        out = self.output_layer(out)
+        # Điều chỉnh fc để khớp với H = 104
+        self.fc = nn.Linear(nh * 2, nclass)
 
-        # Nếu có nhãn (y), tính toán độ mất mát CTC
-        if y is not None:
-            T = out.size(0)  # độ dài chuỗi (width)
-            N = out.size(1)  # kích thước batch
-            input_lengths = torch.full(size=(N,), fill_value=T, dtype=torch.int64, device=out.device)
-            target_lengths = torch.tensor([len(label[label > 0]) for label in y], dtype=torch.int64, device=out.device)
-            loss = criterion(out, y, input_lengths, target_lengths)
-            return out, loss
-        
-        return out, None
+    def forward(self, x):
+        conv = self.cnn(x)
+        b, c, h, w = conv.size()
+        assert h == 1, f"Chiều cao phải bằng 1, got {h}"
+        conv = conv.squeeze(2)
+        conv = conv.permute(2, 0, 1)
+
+        output, _ = self.rnn(conv)
+        output = self.fc(output)
+        return output

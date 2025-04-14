@@ -25,30 +25,42 @@ def batch_resize(input_folder, output_folder, size):
             except Exception as e:
                 print(f"Error processing {file_name}: {e}")
     print(f"Resized all images and saved to {output_folder}")
-class CaptchaDataset:
-    def __init__(self, df, transform=None):
-        self.df = df  
-        self.transform = transform 
+import os
+from PIL import Image
+import torch
+from torch.utils.data import Dataset
+import torchvision.transforms as transforms
 
+class HandwritingDataset(Dataset):
+    def __init__(self, df, root_dir='data/captcha-version-2-images/samples2', transform=None):
+        self.df = df
+        self.root_dir = root_dir
+        self.transform = transform
+        
     def __len__(self):
         return len(self.df)
 
     def __getitem__(self, idx):
-        data = self.df.iloc[idx] #tải dữ liệu từ DataFrame df chứa thông tin ảnh và nhãn.
-        image = Image.open(os.path.join(image_path, data['images'])).convert('L')
-        label = torch.tensor(data['label'], dtype=torch.int32)
+        img_name = self.df.iloc[idx]['images']
+        label = self.df.iloc[idx]['label']
+        img_path = os.path.join(self.root_dir, img_name)
+       
+        image = Image.open(img_path).convert('L')  # Grayscale
+        if self.transform:
+            image = self.transform(image)
+        # Chuyển label thành chuỗi ký tự (nếu cần)
+        label_str = ''.join([chr(c) for c in label])  # Chuyển từ danh sách chỉ số về chuỗi
+        return image, label_str
 
-        if self.transform is not None:
-            image = self.transform(image) #áp dụng chuyển đổi (transform) lên ảnh (nếu được).
-
-        return image, label
+# Transform để resize và chuẩn hóa ảnh
+transform = transforms.Compose([
+    transforms.Resize((104, 1853)),  # Giữ kích thước mong muốn
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.5], std=[0.5])  # Chuẩn hóa cho ảnh grayscale
+])
 #chuẩn bị batch dữ liệu với padding cho nhãn để đảm bảo kích thước đồng nhất.
 def custom_collate_fn(batch):
     images, labels = zip(*batch)
     images = torch.stack(images)
-    max_label_length = max(len(label) for label in labels)
-    # khởi tạopadded_labels với torch.zeros, đảm bảo các phần tử được thêm vào không gây ảnh hưởng đến việc tính loss.
-    padded_labels = torch.zeros((len(labels), max_label_length), dtype=torch.int32)
-    for i, label in enumerate(labels):
-        padded_labels[i, :len(label)] = label
-    return images, padded_labels
+    
+    return images, labels
